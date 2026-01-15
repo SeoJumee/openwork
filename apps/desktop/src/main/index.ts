@@ -65,9 +65,19 @@ process.on('uncaughtException', (error: Error) => {
   // Log full error for debugging
   console.error('[Main] Full exception:', error);
 
-  // For uncaught exceptions, we should quit gracefully
+  // Check if error is recoverable
+  // Some errors (like EADDRINUSE on secondary services) might be tolerable
+  const isRecoverable = isRecoverableError(error);
+
+  if (isRecoverable) {
+    console.warn('[Main] Error is potentially recoverable, continuing...');
+    // In production, you might want to send this to a crash reporting service
+    return;
+  }
+
+  // For fatal uncaught exceptions, quit gracefully
   // This prevents the app from being in an undefined state
-  console.error('[Main] App will quit due to uncaught exception');
+  console.error('[Main] Fatal error detected, app will quit');
 
   // Cleanup before quitting
   try {
@@ -77,9 +87,35 @@ process.on('uncaughtException', (error: Error) => {
     console.error('[Main] Error during cleanup:', cleanupError);
   }
 
-  // Exit with error code
-  process.exit(1);
+  // Give a moment for logs to flush
+  setTimeout(() => {
+    process.exit(1);
+  }, 100);
 });
+
+/**
+ * Determine if an error is recoverable
+ * Recoverable errors don't require app termination
+ */
+function isRecoverableError(error: Error): boolean {
+  // Network errors on non-critical services
+  if (error.message.includes('EADDRINUSE') && !error.stack?.includes('critical')) {
+    return true;
+  }
+
+  // Permission errors
+  if (error.message.includes('EACCES') || error.message.includes('EPERM')) {
+    return true;
+  }
+
+  // Timeout errors
+  if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
+    return true;
+  }
+
+  // Default to non-recoverable for safety
+  return false;
+}
 
 // Load .env file from app root
 const envPath = app.isPackaged
