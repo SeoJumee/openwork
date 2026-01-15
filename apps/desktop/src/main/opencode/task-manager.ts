@@ -424,15 +424,30 @@ export class TaskManager {
         }
 
         // Cleanup on failure and process queue
-        this.cleanupTask(taskId);
-        this.processQueue();
+        // Wrap in try-catch to prevent cleanup errors from becoming unhandled rejections
+        try {
+          this.cleanupTask(taskId);
+          await this.processQueue();
+        } catch (cleanupError) {
+          console.error(`[TaskManager] Error during cleanup/queue processing for task ${taskId}:`, cleanupError);
+          // Last resort: try to at least remove from active tasks
+          this.activeTasks.delete(taskId);
+        }
       }
     })().catch((unexpectedError) => {
       // Safety net: catch any errors that escaped the inner try-catch
-      // This should never happen, but prevents unhandled rejection
+      // This handles errors in the catch block itself (e.g., cleanupTask throwing)
       console.error(`[TaskManager] Unexpected error in task ${taskId} async handler:`, unexpectedError);
-      this.cleanupTask(taskId);
-      this.processQueue();
+
+      // Try to cleanup with extra caution
+      try {
+        this.activeTasks.delete(taskId);
+        this.processQueue().catch((queueError) => {
+          console.error(`[TaskManager] Failed to process queue after unexpected error:`, queueError);
+        });
+      } catch (finalError) {
+        console.error(`[TaskManager] Fatal: Even final cleanup failed:`, finalError);
+      }
     });
 
     return task;
