@@ -414,12 +414,26 @@ export class TaskManager {
         // Now start the agent
         await adapter.startTask({ ...config, taskId });
       } catch (error) {
+        // Wrap callback invocation in try-catch to prevent unhandled rejections
+        // if the error callback itself throws
+        try {
+          callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+        } catch (callbackError) {
+          console.error(`[TaskManager] Error in onError callback for task ${taskId}:`, callbackError);
+          // Even if callback fails, we still need to cleanup
+        }
+
         // Cleanup on failure and process queue
-        callbacks.onError(error instanceof Error ? error : new Error(String(error)));
         this.cleanupTask(taskId);
         this.processQueue();
       }
-    })();
+    })().catch((unexpectedError) => {
+      // Safety net: catch any errors that escaped the inner try-catch
+      // This should never happen, but prevents unhandled rejection
+      console.error(`[TaskManager] Unexpected error in task ${taskId} async handler:`, unexpectedError);
+      this.cleanupTask(taskId);
+      this.processQueue();
+    });
 
     return task;
   }
