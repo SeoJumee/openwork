@@ -684,7 +684,8 @@ export function registerIPCHandlers(): void {
   // API Key: Validate API key by making a test request
   handle('api-key:validate', async (_event: IpcMainInvokeEvent, key: string) => {
     const sanitizedKey = sanitizeString(key, 'apiKey', 256);
-    console.log('[API Key] Validation requested');
+    const keyPrefix = sanitizedKey.substring(0, 8);
+    console.log('[API Key] Validation requested', { keyPrefix: `${keyPrefix}...` });
 
     try {
       // Make a simple API call to validate the key
@@ -707,32 +708,76 @@ export function registerIPCHandlers(): void {
       );
 
       if (response.ok) {
-        console.log('[API Key] Validation succeeded');
+        console.log('[API Key] Validation succeeded', { provider: 'anthropic', keyPrefix: `${keyPrefix}...` });
         return { valid: true };
       }
 
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = (errorData as { error?: { message?: string } })?.error?.message || `API returned status ${response.status}`;
 
-      console.warn('[API Key] Validation failed', { status: response.status, error: errorMessage });
+      console.warn('[API Key] Validation failed', {
+        provider: 'anthropic',
+        status: response.status,
+        error: errorMessage,
+        keyPrefix: `${keyPrefix}...`,
+      });
 
-      return { valid: false, error: errorMessage };
-    } catch (error) {
-      console.error('[API Key] Validation error', { error: error instanceof Error ? error.message : String(error) });
-      if (error instanceof Error && error.name === 'AbortError') {
-        return { valid: false, error: 'Request timed out. Please check your internet connection and try again.' };
+      // Provide more helpful error messages based on status code
+      let userMessage = errorMessage;
+      if (response.status === 401) {
+        userMessage = 'Invalid API key. Please check that you copied the key correctly.';
+      } else if (response.status === 429) {
+        userMessage = 'Rate limit exceeded. Please try again in a few moments.';
+      } else if (response.status >= 500) {
+        userMessage = 'Anthropic API is experiencing issues. Please try again later.';
       }
-      return { valid: false, error: 'Failed to validate API key. Check your internet connection.' };
+
+      return { valid: false, error: userMessage };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error('[API Key] Validation error', {
+        provider: 'anthropic',
+        error: errorMsg,
+        stack: error instanceof Error ? error.stack : undefined,
+        keyPrefix: `${keyPrefix}...`,
+      });
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        return {
+          valid: false,
+          error: 'Request timed out after 15 seconds. Please check your internet connection and try again.',
+        };
+      }
+
+      // Provide helpful error message based on error type
+      if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('getaddrinfo')) {
+        return {
+          valid: false,
+          error: 'Cannot reach Anthropic API. Please check your internet connection.',
+        };
+      } else if (errorMsg.includes('ECONNREFUSED')) {
+        return {
+          valid: false,
+          error: 'Connection refused. Please check your firewall settings.',
+        };
+      }
+
+      return {
+        valid: false,
+        error: 'Failed to validate API key. Check your internet connection and try again.',
+      };
     }
   });
 
   // API Key: Validate API key for any provider
   handle('api-key:validate-provider', async (_event: IpcMainInvokeEvent, provider: string, key: string) => {
     if (!ALLOWED_API_KEY_PROVIDERS.has(provider)) {
+      console.warn('[API Key] Unsupported provider requested', { provider });
       return { valid: false, error: 'Unsupported provider' };
     }
     const sanitizedKey = sanitizeString(key, 'apiKey', 256);
-    console.log(`[API Key] Validation requested for provider: ${provider}`);
+    const keyPrefix = sanitizedKey.substring(0, 8);
+    console.log('[API Key] Validation requested', { provider, keyPrefix: `${keyPrefix}...` });
 
     try {
       let response: Response;
@@ -801,21 +846,71 @@ export function registerIPCHandlers(): void {
       }
 
       if (response.ok) {
-        console.log(`[API Key] Validation succeeded for ${provider}`);
+        console.log('[API Key] Validation succeeded', { provider, keyPrefix: `${keyPrefix}...` });
         return { valid: true };
       }
 
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = (errorData as { error?: { message?: string } })?.error?.message || `API returned status ${response.status}`;
 
-      console.warn(`[API Key] Validation failed for ${provider}`, { status: response.status, error: errorMessage });
-      return { valid: false, error: errorMessage };
-    } catch (error) {
-      console.error(`[API Key] Validation error for ${provider}`, { error: error instanceof Error ? error.message : String(error) });
-      if (error instanceof Error && error.name === 'AbortError') {
-        return { valid: false, error: 'Request timed out. Please check your internet connection and try again.' };
+      console.warn('[API Key] Validation failed', {
+        provider,
+        status: response.status,
+        error: errorMessage,
+        keyPrefix: `${keyPrefix}...`,
+      });
+
+      // Provide more helpful error messages based on status code
+      let userMessage = errorMessage;
+      if (response.status === 401) {
+        userMessage = 'Invalid API key. Please check that you copied the key correctly.';
+      } else if (response.status === 403) {
+        userMessage = 'API key does not have permission to access this resource.';
+      } else if (response.status === 429) {
+        userMessage = 'Rate limit exceeded. Please try again in a few moments.';
+      } else if (response.status >= 500) {
+        userMessage = `${provider.charAt(0).toUpperCase() + provider.slice(1)} API is experiencing issues. Please try again later.`;
       }
-      return { valid: false, error: 'Failed to validate API key. Check your internet connection.' };
+
+      return { valid: false, error: userMessage };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error('[API Key] Validation error', {
+        provider,
+        error: errorMsg,
+        stack: error instanceof Error ? error.stack : undefined,
+        keyPrefix: `${keyPrefix}...`,
+      });
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        return {
+          valid: false,
+          error: 'Request timed out after 15 seconds. Please check your internet connection and try again.',
+        };
+      }
+
+      // Provide helpful error message based on error type
+      if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('getaddrinfo')) {
+        return {
+          valid: false,
+          error: `Cannot reach ${provider.charAt(0).toUpperCase() + provider.slice(1)} API. Please check your internet connection.`,
+        };
+      } else if (errorMsg.includes('ECONNREFUSED')) {
+        return {
+          valid: false,
+          error: 'Connection refused. Please check your firewall settings.',
+        };
+      } else if (errorMsg.includes('ETIMEDOUT')) {
+        return {
+          valid: false,
+          error: 'Connection timed out. Please check your internet connection.',
+        };
+      }
+
+      return {
+        valid: false,
+        error: 'Failed to validate API key. Check your internet connection and try again.',
+      };
     }
   });
 
