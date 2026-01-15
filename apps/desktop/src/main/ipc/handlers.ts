@@ -61,29 +61,10 @@ import {
   taskConfigSchema,
   validate,
 } from './validation';
+import { validateApiKey } from './api-validation-helpers';
 
 const MAX_TEXT_LENGTH = 8000;
 const ALLOWED_API_KEY_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'groq', 'custom']);
-const API_KEY_VALIDATION_TIMEOUT_MS = 15000;
-
-/**
- * Fetch with timeout using AbortController
- */
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit,
-  timeoutMs: number
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    return response;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
 
 // Message batching configuration
 const MESSAGE_BATCH_DELAY_MS = 50;
@@ -684,89 +665,7 @@ export function registerIPCHandlers(): void {
   // API Key: Validate API key by making a test request
   handle('api-key:validate', async (_event: IpcMainInvokeEvent, key: string) => {
     const sanitizedKey = sanitizeString(key, 'apiKey', 256);
-    const keyPrefix = sanitizedKey.substring(0, 8);
-    console.log('[API Key] Validation requested', { keyPrefix: `${keyPrefix}...` });
-
-    try {
-      // Make a simple API call to validate the key
-      const response = await fetchWithTimeout(
-        'https://api.anthropic.com/v1/messages',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': sanitizedKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-3-haiku-20240307',
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'test' }],
-          }),
-        },
-        API_KEY_VALIDATION_TIMEOUT_MS
-      );
-
-      if (response.ok) {
-        console.log('[API Key] Validation succeeded', { provider: 'anthropic', keyPrefix: `${keyPrefix}...` });
-        return { valid: true };
-      }
-
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = (errorData as { error?: { message?: string } })?.error?.message || `API returned status ${response.status}`;
-
-      console.warn('[API Key] Validation failed', {
-        provider: 'anthropic',
-        status: response.status,
-        error: errorMessage,
-        keyPrefix: `${keyPrefix}...`,
-      });
-
-      // Provide more helpful error messages based on status code
-      let userMessage = errorMessage;
-      if (response.status === 401) {
-        userMessage = 'Invalid API key. Please check that you copied the key correctly.';
-      } else if (response.status === 429) {
-        userMessage = 'Rate limit exceeded. Please try again in a few moments.';
-      } else if (response.status >= 500) {
-        userMessage = 'Anthropic API is experiencing issues. Please try again later.';
-      }
-
-      return { valid: false, error: userMessage };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error('[API Key] Validation error', {
-        provider: 'anthropic',
-        error: errorMsg,
-        stack: error instanceof Error ? error.stack : undefined,
-        keyPrefix: `${keyPrefix}...`,
-      });
-
-      if (error instanceof Error && error.name === 'AbortError') {
-        return {
-          valid: false,
-          error: 'Request timed out after 15 seconds. Please check your internet connection and try again.',
-        };
-      }
-
-      // Provide helpful error message based on error type
-      if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('getaddrinfo')) {
-        return {
-          valid: false,
-          error: 'Cannot reach Anthropic API. Please check your internet connection.',
-        };
-      } else if (errorMsg.includes('ECONNREFUSED')) {
-        return {
-          valid: false,
-          error: 'Connection refused. Please check your firewall settings.',
-        };
-      }
-
-      return {
-        valid: false,
-        error: 'Failed to validate API key. Check your internet connection and try again.',
-      };
-    }
+    return validateApiKey('anthropic', sanitizedKey);
   });
 
   // API Key: Validate API key for any provider
@@ -776,142 +675,7 @@ export function registerIPCHandlers(): void {
       return { valid: false, error: 'Unsupported provider' };
     }
     const sanitizedKey = sanitizeString(key, 'apiKey', 256);
-    const keyPrefix = sanitizedKey.substring(0, 8);
-    console.log('[API Key] Validation requested', { provider, keyPrefix: `${keyPrefix}...` });
-
-    try {
-      let response: Response;
-
-      switch (provider) {
-        case 'anthropic':
-          response = await fetchWithTimeout(
-            'https://api.anthropic.com/v1/messages',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': sanitizedKey,
-                'anthropic-version': '2023-06-01',
-              },
-              body: JSON.stringify({
-                model: 'claude-3-haiku-20240307',
-                max_tokens: 1,
-                messages: [{ role: 'user', content: 'test' }],
-              }),
-            },
-            API_KEY_VALIDATION_TIMEOUT_MS
-          );
-          break;
-
-        case 'openai':
-          response = await fetchWithTimeout(
-            'https://api.openai.com/v1/models',
-            {
-              method: 'GET',
-              headers: {
-                'Authorization': `Bearer ${sanitizedKey}`,
-              },
-            },
-            API_KEY_VALIDATION_TIMEOUT_MS
-          );
-          break;
-
-        case 'google':
-          response = await fetchWithTimeout(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${sanitizedKey}`,
-            {
-              method: 'GET',
-            },
-            API_KEY_VALIDATION_TIMEOUT_MS
-          );
-          break;
-
-        case 'groq':
-          response = await fetchWithTimeout(
-            'https://api.groq.com/openai/v1/models',
-            {
-              method: 'GET',
-              headers: {
-                'Authorization': `Bearer ${sanitizedKey}`,
-              },
-            },
-            API_KEY_VALIDATION_TIMEOUT_MS
-          );
-          break;
-
-        default:
-          // For 'custom' provider, skip validation
-          console.log('[API Key] Skipping validation for custom provider');
-          return { valid: true };
-      }
-
-      if (response.ok) {
-        console.log('[API Key] Validation succeeded', { provider, keyPrefix: `${keyPrefix}...` });
-        return { valid: true };
-      }
-
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = (errorData as { error?: { message?: string } })?.error?.message || `API returned status ${response.status}`;
-
-      console.warn('[API Key] Validation failed', {
-        provider,
-        status: response.status,
-        error: errorMessage,
-        keyPrefix: `${keyPrefix}...`,
-      });
-
-      // Provide more helpful error messages based on status code
-      let userMessage = errorMessage;
-      if (response.status === 401) {
-        userMessage = 'Invalid API key. Please check that you copied the key correctly.';
-      } else if (response.status === 403) {
-        userMessage = 'API key does not have permission to access this resource.';
-      } else if (response.status === 429) {
-        userMessage = 'Rate limit exceeded. Please try again in a few moments.';
-      } else if (response.status >= 500) {
-        userMessage = `${provider.charAt(0).toUpperCase() + provider.slice(1)} API is experiencing issues. Please try again later.`;
-      }
-
-      return { valid: false, error: userMessage };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error('[API Key] Validation error', {
-        provider,
-        error: errorMsg,
-        stack: error instanceof Error ? error.stack : undefined,
-        keyPrefix: `${keyPrefix}...`,
-      });
-
-      if (error instanceof Error && error.name === 'AbortError') {
-        return {
-          valid: false,
-          error: 'Request timed out after 15 seconds. Please check your internet connection and try again.',
-        };
-      }
-
-      // Provide helpful error message based on error type
-      if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('getaddrinfo')) {
-        return {
-          valid: false,
-          error: `Cannot reach ${provider.charAt(0).toUpperCase() + provider.slice(1)} API. Please check your internet connection.`,
-        };
-      } else if (errorMsg.includes('ECONNREFUSED')) {
-        return {
-          valid: false,
-          error: 'Connection refused. Please check your firewall settings.',
-        };
-      } else if (errorMsg.includes('ETIMEDOUT')) {
-        return {
-          valid: false,
-          error: 'Connection timed out. Please check your internet connection.',
-        };
-      }
-
-      return {
-        valid: false,
-        error: 'Failed to validate API key. Check your internet connection and try again.',
-      };
-    }
+    return validateApiKey(provider, sanitizedKey);
   });
 
   // API Key: Clear API key
