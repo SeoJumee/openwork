@@ -38,6 +38,49 @@ app.name = 'Openwork';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Global error handlers - prevent unhandled rejections from crashing the app
+// This is critical for production stability as async errors can occur in
+// event handlers, IPC callbacks, and background tasks
+process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
+  console.error('[Main] Unhandled Promise Rejection:', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+    promise: promise,
+  });
+
+  // Log to console with full details for debugging
+  console.error('[Main] Full rejection details:', reason);
+
+  // In production, you might want to send this to a crash reporting service
+  // For now, we log it and continue running
+});
+
+process.on('uncaughtException', (error: Error) => {
+  console.error('[Main] Uncaught Exception:', {
+    message: error.message,
+    stack: error.stack,
+    name: error.name,
+  });
+
+  // Log full error for debugging
+  console.error('[Main] Full exception:', error);
+
+  // For uncaught exceptions, we should quit gracefully
+  // This prevents the app from being in an undefined state
+  console.error('[Main] App will quit due to uncaught exception');
+
+  // Cleanup before quitting
+  try {
+    flushPendingTasks();
+    disposeTaskManager();
+  } catch (cleanupError) {
+    console.error('[Main] Error during cleanup:', cleanupError);
+  }
+
+  // Exit with error code
+  process.exit(1);
+});
+
 // Load .env file from app root
 const envPath = app.isPackaged
   ? path.join(process.resourcesPath, '.env')
