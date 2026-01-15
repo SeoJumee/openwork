@@ -156,6 +156,24 @@ export function startPermissionApiServer(): http.Server {
       const allowed = await new Promise<boolean>((resolve, reject) => {
         const timeoutId = setTimeout(() => {
           pendingPermissions.delete(requestId);
+
+          // Log timeout for debugging
+          console.warn(`[Permission API] Request ${requestId} timed out after ${PERMISSION_TIMEOUT_MS / 1000}s`, {
+            operation: data.operation,
+            filePath: data.filePath,
+            taskId,
+          });
+
+          // Notify renderer that permission timed out so UI can show message
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('permission:timeout', {
+              requestId,
+              taskId,
+              operation: data.operation,
+              filePath: data.filePath,
+            });
+          }
+
           reject(new Error('Permission request timed out'));
         }, PERMISSION_TIMEOUT_MS);
 
@@ -165,8 +183,20 @@ export function startPermissionApiServer(): http.Server {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ allowed }));
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Request timed out';
+      console.error('[Permission API] Request failed:', {
+        requestId,
+        taskId,
+        error: errorMessage,
+      });
+
       res.writeHead(408, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Request timed out', allowed: false }));
+      res.end(JSON.stringify({
+        error: errorMessage,
+        allowed: false,
+        requestId,
+        message: 'Permission request timed out. The operation was not completed.',
+      }));
     }
   });
 
