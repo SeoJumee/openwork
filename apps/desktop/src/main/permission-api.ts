@@ -38,6 +38,8 @@ export function initPermissionApi(
 /**
  * Resolve a pending permission request from the MCP server
  * Called when user responds via the UI
+ *
+ * IMPORTANT: Always clears the timeout to prevent memory leaks
  */
 export function resolvePermission(requestId: string, allowed: boolean): boolean {
   const pending = pendingPermissions.get(requestId);
@@ -45,9 +47,18 @@ export function resolvePermission(requestId: string, allowed: boolean): boolean 
     return false;
   }
 
+  // Critical: clear timeout BEFORE resolving to prevent race conditions
   clearTimeout(pending.timeoutId);
-  pending.resolve(allowed);
   pendingPermissions.delete(requestId);
+
+  // Resolve after cleanup to ensure cleanup happens even if resolve throws
+  try {
+    pending.resolve(allowed);
+  } catch (error) {
+    console.error('[Permission API] Error in resolve callback:', error);
+    // Don't re-throw - we've already cleaned up
+  }
+
   return true;
 }
 
